@@ -6,6 +6,13 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v2"
 )
 
+const (
+	// negativeSecretFlag is the bit that indicates the secret is encoded
+	// as a negative number in adaptor signatures and should be
+	// appropriately handled.
+	negativeSecretFlag = 0x01
+)
+
 // Signature is the full signature + adaptor signature data.
 //
 // TODO: Maybe Signature should only be R,S and we should create a
@@ -22,18 +29,59 @@ type Signature struct {
 	RNonce     *secp256k1.PublicKey // R = rG
 	AdaptorSig *big.Int             // s' = r + Hash(R+T || m) * privKey
 	Secret     []byte               // secret = s - s'
+	Flags      byte
+}
+
+// Noncer defines a single function Nonces that is used to generate nonces for
+// adaptor signatures.
+type Noncer interface {
+	// Nonces should return the `r` and `t` nonce data (respectively)
+	// required to generate nonces for the signing operation. The `t` nonce
+	// data is the secret preimage revealed by the difference between the
+	// adaptor signature and the full signature.
+	//
+	// WARNING: reusing or otherwise generating deterministic nonces
+	// discloses the private signing key, therefore the returned bytes
+	// should ideally be generated from a cryptographically secure random
+	// number generator.
+	Nonces() ([]byte, []byte, error)
 }
 
 // Sign generates the full signature _and_ the adaptor signature for a given
 // message and private key.
-func Sign(privKey *secp256k1.PrivateKey, msg []byte) (*Signature, error) {
+func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature, error) {
 
 	curve := secp256k1.S256()
+	var flags byte
 
-	// Generate a set of usable Nonces for this signature.
-	rNonce, tNonce, _, rPub, tPub, rtPub, err := usableNonces()
+	// Generate the nonces.
+	rNonceData, tNonceData, err := noncer.Nonces()
 	if err != nil {
 		return nil, err
+	}
+
+	// TODO: bounds check them.
+
+	// Find out the corresponding pub keys for the nonces.
+	rNonce := encodedBytesToBigInt(rNonceData)
+	tNonce := encodedBytesToBigInt(tNonceData)
+	rPub := pubkeyFromPrivData(rNonce.Bytes())
+	tPub := pubkeyFromPrivData(tNonce.Bytes())
+
+	// rtNonce = r+t
+	rtNonce := new(big.Int)
+	rtNonce.Add(rNonce, tNonce)
+	rtNonce.Mod(rtNonce, curve.N)
+	rtPub := pubkeyFromPrivData(rtNonce.Bytes())
+
+	// Maintain R+T in group order as required by consensus rules for
+	// schnorr verification. In that case, send out a flag that indicates
+	// the secret is "negative" and we need to perform a slightly different
+	// operation to extract it from the full and adaptor signatures.
+	if rtPub.Y.Bit(0) == 1 {
+		rtNonce.Sub(curve.N, rtNonce)
+		rtPub = pubkeyFromPrivData(rtNonce.Bytes())
+		flags = flags | negativeSecretFlag
 	}
 
 	// Calculate Hash(R+T || m)
@@ -43,15 +91,19 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte) (*Signature, error) {
 
 	// Calculate the Adaptor Signature s' = r - Hash(R+T || m) * x
 	adaptorSig := new(big.Int)
-	adaptorSig.Mul(rtmHash, privKey.D)
-	adaptorSig.Sub(rNonce, adaptorSig)
+	if flags&negativeSecretFlag > 0 {
+		adaptorSig.Sub(curve.N, rNonce)
+		adaptorSig.Sub(adaptorSig, rtmhx)
+	} else {
+		adaptorSig.Sub(rNonce, rtmhx)
+	}
 	adaptorSig.Mod(adaptorSig, curve.N)
 
 	// TODO: bounds check adaptorSig (if == 0)
 
 	// Calculate the full signature s = s' + t
 	fullSig := new(big.Int)
-	fullSig.Add(adaptorSig, tNonce)
+	fullSig.Sub(rtNonce, rtmhx)
 	fullSig.Mod(fullSig, curve.N)
 
 	// TODO: bounds check fullSig (if == 0)
@@ -65,26 +117,35 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte) (*Signature, error) {
 		RNonce:     rPub,
 		AdaptorSig: adaptorSig,
 		Secret:     tNonce.Bytes(),
+		Flags:      flags,
 	}, nil
 }
 
 // RecoverSecret allows one to recover the secret nonce (the "t" secret nonce)
 // after one has seen both the full and adaptor signatures.
-func RecoverSecret(s, adaptorSig *big.Int) []byte {
+func RecoverSecret(s, adaptorSig *big.Int, flags byte) []byte {
 	secret := new(big.Int)
-	secret.Sub(s, adaptorSig)
+	if flags&negativeSecretFlag > 0 {
+		secret.Sub(adaptorSig, s)
+	} else {
+		secret.Sub(s, adaptorSig)
+	}
 	secret.Mod(secret, secp256k1.S256().N)
 	return secret.Bytes()
 }
 
 // AssembleFullSig allows one to (re-)assemble the fully valid signature after
 // one has seen both the adaptor signature and the secret.
-func AssembleFullSig(adaptorSig *big.Int, secret []byte) *big.Int {
+func AssembleFullSig(adaptorSig *big.Int, secret []byte, flags byte) *big.Int {
 	secretBig := new(big.Int)
 	secretBig.SetBytes(secret)
 
 	sig := new(big.Int)
-	sig.Add(adaptorSig, secretBig)
+	if flags&negativeSecretFlag > 0 {
+		sig.Sub(adaptorSig, secretBig)
+	} else {
+		sig.Add(adaptorSig, secretBig)
+	}
 	sig.Mod(sig, secp256k1.S256().N)
 	return sig
 }

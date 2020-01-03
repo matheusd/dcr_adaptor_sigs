@@ -16,15 +16,39 @@ import (
 	"github.com/decred/dcrd/wire"
 )
 
+func mustDecodeHex(s string) []byte {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+type mockNoncer struct {
+	r, t []byte
+}
+
+func (m *mockNoncer) Nonces() ([]byte, []byte, error) {
+	return m.r, m.t, nil
+}
+
+// newMockNoncer returns a new mock noncer with known fixed and valid nonces.
+func newMockNoncer() *mockNoncer {
+	return &mockNoncer{
+		r: mustDecodeHex("42526f5567685420746f2075206279204465637265442b6d407468657573645f"),
+		t: mustDecodeHex("646170742073696773207220776f6f742120747920412e506f656c7374726121"),
+	}
+}
+
 // TestAdaptorSigStatic tests whether the adaptor signature scheme works for
 // static, predetermined keys.
 func TestAdaptorSigStatic(t *testing.T) {
 	privKeyData, _ := hex.DecodeString("0102030405060708090A0B0C0D0E0F000102030405060708090A0B0C0D0E0F00")
 	privKey, pubKey := secp256k1.PrivKeyFromBytes(privKeyData)
-
+	noncer := newMockNoncer()
 	msgData, _ := hex.DecodeString("0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F")
 
-	sig, err := Sign(privKey, msgData)
+	sig, err := Sign(privKey, msgData, noncer)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,16 +73,22 @@ func TestAdaptorSigStatic(t *testing.T) {
 
 	// We should be able to extract the secret from the difference between
 	// the full sig and the adaptor sig.
-	gotSecret := RecoverSecret(sig.S, sig.AdaptorSig)
+	gotSecret := RecoverSecret(sig.S, sig.AdaptorSig, sig.Flags)
 	if !bytes.Equal(gotSecret, sig.Secret) {
 		t.Fatalf("extracted secret not equal to generated. want=%x got=%x",
 			sig.Secret, gotSecret)
 	}
 
+	// And the secret should equal the original `t` nonce data.
+	if !bytes.Equal(gotSecret, noncer.t) {
+		t.Fatalf("extracted secret not equal to original t nonce. want=%x got=%x",
+			noncer.t, gotSecret)
+	}
+
 	// Conversely, having been given the adaptor sig, public nonce (R+T)
 	// and the secret we should be able to combine them into a valid
 	// signature.
-	assembledSig := AssembleFullSig(sig.AdaptorSig, sig.Secret)
+	assembledSig := AssembleFullSig(sig.AdaptorSig, sig.Secret, sig.Flags)
 	validAssembled := schnorr.Verify(pubKey, msgData, sig.R, assembledSig)
 	if !validAssembled {
 		t.Fatalf("assembled signature failed verification")
@@ -72,11 +102,12 @@ func BenchmarkSigning(b *testing.B) {
 
 	msgData, _ := hex.DecodeString("0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F")
 	n := uint32(b.N)
+	noncer := newMockNoncer()
 
 	b.ResetTimer()
 	for i := uint32(0); i < n; i++ {
 		binary.BigEndian.PutUint32(msgData, i)
-		_, err := Sign(privKey, msgData)
+		_, err := Sign(privKey, msgData, noncer)
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)
 		}
@@ -146,7 +177,7 @@ func TestAdaptorSigTxs(t *testing.T) {
 	}
 
 	// Sign via the adaptor sig method.
-	sig, err := Sign(privKey, sigHash)
+	sig, err := Sign(privKey, sigHash, newMockNoncer())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

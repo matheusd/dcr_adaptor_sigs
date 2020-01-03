@@ -1,7 +1,6 @@
 package dcr_adaptor_sigs
 
 import (
-	"crypto/rand"
 	"math/big"
 
 	"github.com/decred/dcrd/chaincfg/chainhash"
@@ -30,56 +29,6 @@ func negatePubKey(p *secp256k1.PublicKey) *secp256k1.PublicKey {
 	newy.Add(p.X, p.Y)
 	newy.Mod(newy, secp256k1.S256().N)
 	return secp256k1.NewPublicKey(p.X, newy)
-}
-
-// usableNonces returns the usable r,r,r+t secret and public nonces for use
-// with and adaptor signature.
-func usableNonces() (*big.Int, *big.Int, *big.Int, *secp256k1.PublicKey, *secp256k1.PublicKey, *secp256k1.PublicKey, error) {
-	var buf [32]byte
-
-	rNonce := new(big.Int)
-	tNonce := new(big.Int)
-
-	for {
-		_, err := rand.Read(buf[:])
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, err
-		}
-
-		rNonce.SetBytes(buf[:])
-
-		_, err = rand.Read(buf[:])
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, err
-		}
-
-		tNonce.SetBytes(buf[:])
-
-		rPub := pubkeyFromPrivData(rNonce.Bytes())
-		tPub := pubkeyFromPrivData(tNonce.Bytes())
-		rtPub := addPubKeys(rPub, tPub)
-
-		// TODO: bounds check rNonce, tNonce, rtNonce, rPub, tPub,
-		// rtPub.
-
-		// Due to how schnorr sig is currently verified, only nonces
-		// whose corresponding pubkey's Y value is even can be used, so
-		// regenerate until we get a set that matches. This could be
-		// improved... :(
-		//
-		// Ideally we should be using compact representation for
-		// pubkeys/nonces/signatures so that arbitrary nonces could be
-		// used.
-		if tPub.Y.Bit(0) == 1 || rtPub.Y.Bit(0) == 1 {
-			continue
-		}
-
-		rtNonce := new(big.Int)
-		rtNonce.Add(rNonce, tNonce)
-		rtNonce.Mod(rtNonce, secp256k1.S256().N)
-
-		return rNonce, tNonce, rtNonce, rPub, tPub, rtPub, nil
-	}
 }
 
 // bigIntToEncodedBytes converts a big integer into its corresponding 32 byte
@@ -114,6 +63,16 @@ func bigIntToEncodedBytes(a *big.Int) *[32]byte {
 
 }
 
+// encodedBytesToBigInt converts a 32 byte big endian representation of an
+// integer into a big integer.
+func encodedBytesToBigInt(s []byte) *big.Int {
+	// Use a copy so we don't screw up our original
+	// memory.
+	var c [32]byte
+	copy(c[:], s[:])
+	bi := new(big.Int).SetBytes(c[:])
+	return bi
+}
 func calcHash(pub *secp256k1.PublicKey, msg []byte) *big.Int {
 	pubBytes := bigIntToEncodedBytes(pub.X)
 	var input [64]byte
