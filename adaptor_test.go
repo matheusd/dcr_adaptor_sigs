@@ -25,19 +25,20 @@ func mustDecodeHex(s string) []byte {
 }
 
 type mockNoncer struct {
-	r, t []byte
+	t SecretScalar
+	u [32]byte
 }
 
-func (m *mockNoncer) Nonces() ([]byte, []byte, error) {
-	return m.r, m.t, nil
+func (m *mockNoncer) Nonces() (SecretScalar, [32]byte, error) {
+	return m.t, m.u, nil
 }
 
 // newMockNoncer returns a new mock noncer with known fixed and valid nonces.
 func newMockNoncer() *mockNoncer {
-	return &mockNoncer{
-		r: mustDecodeHex("42526f5567685420746f2075206279204465637265442b6d407468657573645f"),
-		t: mustDecodeHex("646170742073696773207220776f6f742120747920412e506f656c7374726121"),
-	}
+	var n mockNoncer
+	copy(n.t[:], mustDecodeHex("646170742073696773207220776f6f742120747920412e506f656c7374726121"))
+	copy(n.u[:], mustDecodeHex("42526f5567685420746f2075206279204465637265442b6d407468657573645f"))
+	return &n
 }
 
 // TestAdaptorSigStatic tests whether the adaptor signature scheme works for
@@ -48,48 +49,47 @@ func TestAdaptorSigStatic(t *testing.T) {
 	noncer := newMockNoncer()
 	msgData, _ := hex.DecodeString("0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F")
 
-	sig, err := Sign(privKey, msgData, noncer)
+	sig, adaptor, err := Sign(privKey, msgData, noncer)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// The full signature should be a valid schnorr sig.
-	valid := schnorr.Verify(pubKey, msgData, sig.R, sig.S)
+	valid := schnorr.Verify(pubKey, msgData, sig.R.X, sig.S)
 	if !valid {
 		t.Fatalf("signature failed verification")
 	}
 
 	// The adaptor sig should be a valid partial sig.
-	validAdaptor := VerifyAdaptorSig(sig.R, sig.RNonce, pubKey, sig.AdaptorSig, msgData)
+	validAdaptor := VerifyAdaptorSig(adaptor, pubKey, msgData)
 	if !validAdaptor {
 		t.Fatal("adaptor signature failed verification")
 	}
 
 	// But it should *not* be a valid schnorr sig.
-	adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, sig.R, sig.AdaptorSig)
+	adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, adaptor.R.X, adaptor.SPrime)
 	if adaptorIsFullyValid {
 		t.Fatal("adaptor sig still verified as valid when it should not")
 	}
 
 	// We should be able to extract the secret from the difference between
 	// the full sig and the adaptor sig.
-	gotSecret := RecoverSecret(sig.S, sig.AdaptorSig, sig.Flags)
-	if !bytes.Equal(gotSecret, sig.Secret) {
-		t.Fatalf("extracted secret not equal to generated. want=%x got=%x",
-			sig.Secret, gotSecret)
-	}
+	gotSecret := RecoverSecret(sig, adaptor)
 
 	// And the secret should equal the original `t` nonce data.
-	if !bytes.Equal(gotSecret, noncer.t) {
+	if !bytes.Equal(gotSecret[:], noncer.t[:]) {
 		t.Fatalf("extracted secret not equal to original t nonce. want=%x got=%x",
 			noncer.t, gotSecret)
 	}
 
-	// Conversely, having been given the adaptor sig, public nonce (R+T)
+	// Conversely, having been given the adaptor sig, public nonce (T+U)
 	// and the secret we should be able to combine them into a valid
 	// signature.
-	assembledSig := AssembleFullSig(sig.AdaptorSig, sig.Secret, sig.Flags)
-	validAssembled := schnorr.Verify(pubKey, msgData, sig.R, assembledSig)
+	assembledSig, err := AssembleFullSig(adaptor, &noncer.t)
+	if err != nil {
+		t.Fatalf("full sig assembly failed: %v", err)
+	}
+	validAssembled := schnorr.Verify(pubKey, msgData, assembledSig.R.X, assembledSig.S)
 	if !validAssembled {
 		t.Fatalf("assembled signature failed verification")
 	}
@@ -107,7 +107,7 @@ func BenchmarkSigning(b *testing.B) {
 	b.ResetTimer()
 	for i := uint32(0); i < n; i++ {
 		binary.BigEndian.PutUint32(msgData, i)
-		_, err := Sign(privKey, msgData, noncer)
+		_, _, err := Sign(privKey, msgData, noncer)
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)
 		}
@@ -177,20 +177,20 @@ func TestAdaptorSigTxs(t *testing.T) {
 	}
 
 	// Sign via the adaptor sig method.
-	sig, err := Sign(privKey, sigHash, newMockNoncer())
+	sig, _, err := Sign(privKey, sigHash, newMockNoncer())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	pkData := pubKey.Serialize()
 
 	// Verify the signature is correct.
-	valid := schnorr.Verify(pubKey, sigHash, sig.R, sig.S)
+	valid := schnorr.Verify(pubKey, sigHash, sig.R.X, sig.S)
 	if !valid {
 		t.Fatal("sig verification failed")
 	}
 
 	// Fill-in the signature data.
-	schnorrSig := schnorr.NewSignature(sig.R, sig.S).Serialize()
+	schnorrSig := schnorr.NewSignature(sig.R.X, sig.S).Serialize()
 	schnorrSig = append(schnorrSig, byte(txscript.SigHashAll))
 	sigScript, err := txscript.NewScriptBuilder().AddData(schnorrSig).AddData(pkData).Script()
 	if err != nil {
