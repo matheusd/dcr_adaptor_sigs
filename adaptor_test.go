@@ -55,7 +55,8 @@ func TestAdaptorSigStatic(t *testing.T) {
 	}
 
 	// The full signature should be a valid schnorr sig.
-	valid := schnorr.Verify(pubKey, msgData, sig.R.X, sig.S)
+	shSig := sig.SchnorrSig()
+	valid := schnorr.Verify(pubKey, msgData, shSig.R, shSig.S)
 	if !valid {
 		t.Fatalf("signature failed verification")
 	}
@@ -67,7 +68,7 @@ func TestAdaptorSigStatic(t *testing.T) {
 	}
 
 	// But it should *not* be a valid schnorr sig.
-	adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, adaptor.R.X, adaptor.SPrime)
+	adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, adaptor.r.X, adaptor.sPrime)
 	if adaptorIsFullyValid {
 		t.Fatal("adaptor sig still verified as valid when it should not")
 	}
@@ -89,7 +90,8 @@ func TestAdaptorSigStatic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("full sig assembly failed: %v", err)
 	}
-	validAssembled := schnorr.Verify(pubKey, msgData, assembledSig.R.X, assembledSig.S)
+	shSig = assembledSig.SchnorrSig()
+	validAssembled := schnorr.Verify(pubKey, msgData, shSig.R, shSig.S)
 	if !validAssembled {
 		t.Fatalf("assembled signature failed verification")
 	}
@@ -184,13 +186,14 @@ func TestAdaptorSigTxs(t *testing.T) {
 	pkData := pubKey.Serialize()
 
 	// Verify the signature is correct.
-	valid := schnorr.Verify(pubKey, sigHash, sig.R.X, sig.S)
+	shSig := sig.SchnorrSig()
+	valid := schnorr.Verify(pubKey, sigHash, shSig.R, shSig.S)
 	if !valid {
 		t.Fatal("sig verification failed")
 	}
 
 	// Fill-in the signature data.
-	schnorrSig := schnorr.NewSignature(sig.R.X, sig.S).Serialize()
+	schnorrSig := shSig.Serialize()
 	schnorrSig = append(schnorrSig, byte(txscript.SigHashAll))
 	sigScript, err := txscript.NewScriptBuilder().AddData(schnorrSig).AddData(pkData).Script()
 	if err != nil {

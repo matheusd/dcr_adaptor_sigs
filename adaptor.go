@@ -4,6 +4,7 @@ import (
 	"math/big"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v2"
+	"github.com/decred/dcrd/dcrec/secp256k1/v2/schnorr"
 )
 
 const (
@@ -17,17 +18,21 @@ type SecretScalar [32]byte
 
 // Signature is the fully valid Schnorr signature.
 type Signature struct {
-	R *secp256k1.PublicKey // R = tG + uG
-	S *big.Int             // s = t + u - Hash(T+U || m) * privKey
+	r *secp256k1.PublicKey // R = tG + uG
+	s *big.Int             // s = t + u - Hash(T+U || m) * privKey
+}
+
+func (sig *Signature) SchnorrSig() *schnorr.Signature {
+	return schnorr.NewSignature(sig.r.X, sig.s)
 }
 
 // AdaptorSignature is the partial adaptor signature.
 type AdaptorSignature struct {
-	T      *secp256k1.PublicKey // T = secret * G
-	U      *secp256k1.PublicKey // U = uG
-	R      *secp256k1.PublicKey // R = T + U
-	SPrime *big.Int             // s' = u + Hash(T+U || m) * privKey
-	Flags  byte
+	t      *secp256k1.PublicKey // T = secret * G
+	u      *secp256k1.PublicKey // U = uG
+	r      *secp256k1.PublicKey // R = T + U
+	sPrime *big.Int             // s' = u + Hash(T+U || m) * privKey
+	flags  byte
 }
 
 // Noncer defines a single function Nonces that is used to generate nonces for
@@ -107,15 +112,15 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 	// TODO: bounds check fullSig (if == 0)
 
 	sig := &Signature{
-		R: rPub,
-		S: fullSig,
+		r: rPub,
+		s: fullSig,
 	}
 	adaptor := &AdaptorSignature{
-		T:      tPub,
-		U:      uPub,
-		R:      rPub,
-		SPrime: sPrime,
-		Flags:  flags,
+		t:      tPub,
+		u:      uPub,
+		r:      rPub,
+		sPrime: sPrime,
+		flags:  flags,
 	}
 
 	// Done! Return all data.
@@ -126,10 +131,10 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 // after one has seen both the full and adaptor signatures.
 func RecoverSecret(sig *Signature, adaptor *AdaptorSignature) SecretScalar {
 	secret := new(big.Int)
-	if adaptor.Flags&negativeSecretFlag > 0 {
-		secret.Sub(adaptor.SPrime, sig.S)
+	if adaptor.flags&negativeSecretFlag > 0 {
+		secret.Sub(adaptor.sPrime, sig.s)
 	} else {
-		secret.Sub(sig.S, adaptor.SPrime)
+		secret.Sub(sig.s, adaptor.sPrime)
 	}
 	secret.Mod(secret, secp256k1.S256().N)
 	var s SecretScalar
@@ -144,15 +149,15 @@ func AssembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar) (*Signatur
 	secretBig.SetBytes(secret[:])
 
 	s := new(big.Int)
-	if adaptor.Flags&negativeSecretFlag > 0 {
-		s.Sub(adaptor.SPrime, secretBig)
+	if adaptor.flags&negativeSecretFlag > 0 {
+		s.Sub(adaptor.sPrime, secretBig)
 	} else {
-		s.Add(adaptor.SPrime, secretBig)
+		s.Add(adaptor.sPrime, secretBig)
 	}
 	s.Mod(s, secp256k1.S256().N)
 	return &Signature{
-		R: adaptor.R,
-		S: s,
+		r: adaptor.r,
+		s: s,
 	}, nil
 }
 
@@ -173,7 +178,7 @@ func VerifyAdaptorSig(adaptor *AdaptorSignature, pubKey *secp256k1.PublicKey, ms
 
 	// Calculate Hash(T+U || m).
 	bigZero := new(big.Int)
-	rPub := secp256k1.NewPublicKey(adaptor.R.X, bigZero)
+	rPub := secp256k1.NewPublicKey(adaptor.r.X, bigZero)
 	rmHash := calcHash(rPub, msg)
 
 	// Multiply by the pubkey to get E = Hash(T+U ||m) * P.
@@ -181,12 +186,12 @@ func VerifyAdaptorSig(adaptor *AdaptorSignature, pubKey *secp256k1.PublicKey, ms
 	hpub := pubKeyMult(pubKey, rmHashBytes[:])
 
 	// We want to verify whether s'G + E == U , so calculate s'G.
-	sBytes := adaptor.SPrime.Bytes()
+	sBytes := adaptor.sPrime.Bytes()
 	sg := pubkeyFromPrivData(sBytes[:])
 
 	// Add everything to get s'G + Hash(T+U || m) * P.
 	targetPoint := addPubKeys(sg, hpub)
 
 	// That must equal the partial nonce U = uG
-	return adaptor.U.X.Cmp(targetPoint.X) == 0
+	return adaptor.u.X.Cmp(targetPoint.X) == 0
 }
