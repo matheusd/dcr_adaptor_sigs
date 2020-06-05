@@ -1,6 +1,8 @@
 package dcr_adaptor_sigs
 
 import (
+	"crypto/rand"
+	"fmt"
 	"math/big"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v2"
@@ -34,16 +36,33 @@ func (asig *AdaptorSignature) R() *secp256k1.PublicKey {
 // Noncer defines a single function Nonces that is used to generate nonces for
 // adaptor signatures.
 type Noncer interface {
-	// Nonces should return the `t`, and `u` nonce data (respectively)
-	// required to generate nonces for the signing operation. The `t` nonce
-	// data is the secret preimage revealed by the difference between the
-	// adaptor signature and the full signature.
-	//
-	// WARNING: reusing or otherwise generating deterministic nonces
-	// discloses the private signing key, therefore the returned bytes
-	// should ideally be generated from a cryptographically secure random
-	// number generator.
-	Nonces() (SecretScalar, [32]byte, error)
+	nonce(privKey *secp256k1.PrivateKey, msg []byte) [32]byte
+}
+
+type RandomNoncer struct{}
+
+func (r RandomNoncer) nonce(_ *secp256k1.PrivateKey, _ []byte) [32]byte {
+	var u [32]byte
+	n, err := rand.Read(u[:])
+
+	// Entropy failures are critical.
+	if n != 32 {
+		panic(fmt.Sprintf("entropy failure: only read %d random byes", n))
+	}
+	if err != nil {
+		panic(fmt.Sprintf("entropy failure: %v", err))
+	}
+
+	return u
+}
+
+type RFC6979Noncer struct{}
+
+func (r RFC6979Noncer) nonce(priv *secp256k1.PrivateKey, msg []byte) [32]byte {
+	b := secp256k1.NonceRFC6979(priv.D, msg, nil, nil)
+	var u [32]byte
+	copy(u[:], b.Bytes())
+	return u
 }
 
 // adaptorSign produces an adaptor signature without knowledge of the private
@@ -88,8 +107,9 @@ func adaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicK
 }
 
 // AdaptorSign produces an adaptor (partial) signature for the given data.
-func AdaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicKey, u *[32]byte) (*AdaptorSignature, error) {
-	sig, _, _ := adaptorSign(privKey, msg, T, u)
+func AdaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicKey, noncer Noncer) (*AdaptorSignature, error) {
+	u := noncer.nonce(privKey, msg)
+	sig, _, _ := adaptorSign(privKey, msg, T, &u)
 	return sig, nil
 }
 
@@ -119,25 +139,6 @@ func assembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar,
 func AssembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar) (*Signature, error) {
 	R, inverted := produceR(adaptor.u, adaptor.t)
 	return assembleFullSig(adaptor, secret, R, inverted)
-}
-
-// Sign generates the full signature _and_ the adaptor signature for a given
-// message and private key.
-func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature, *AdaptorSignature, error) {
-	// Generate the nonces.
-	tNonceData, uNonceData, err := noncer.Nonces()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Find out the corresponding pub keys for the nonces.
-	tNonce := encodedBytesToBigInt(tNonceData[:])
-	T := pubkeyFromPrivData(tNonce.Bytes())
-
-	adaptor, R, inverted := adaptorSign(privKey, msg, T, &uNonceData)
-	full, err := assembleFullSig(adaptor, &tNonceData, R, inverted)
-
-	return full, adaptor, err
 }
 
 // RecoverSecret allows one to recover the secret nonce (the "t" secret nonce)

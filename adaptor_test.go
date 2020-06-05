@@ -29,8 +29,8 @@ type mockNoncer struct {
 	u [32]byte
 }
 
-func (m *mockNoncer) Nonces() (SecretScalar, [32]byte, error) {
-	return m.t, m.u, nil
+func (m *mockNoncer) nonce(_ *secp256k1.PrivateKey, _ []byte) [32]byte {
+	return m.u
 }
 
 // newMockNoncer returns a new mock noncer with known fixed and valid nonces.
@@ -39,6 +39,19 @@ func newMockNoncer() *mockNoncer {
 	copy(n.t[:], mustDecodeHex("646170742073696773207220776f6f742120747920412e506f656c7374726121"))
 	copy(n.u[:], mustDecodeHex("42526f5567685420746f2075206279204465637265442b6d407468657573645f"))
 	return &n
+}
+
+// sign generates the full signature _and_ the adaptor signature for a given
+// message and private key.
+func sign(privKey *secp256k1.PrivateKey, msg []byte, mn *mockNoncer) (*Signature, *AdaptorSignature, error) {
+	// Find out the corresponding pub keys for the nonces.
+	tNonce := encodedBytesToBigInt(mn.t[:])
+	T := pubkeyFromPrivData(tNonce.Bytes())
+
+	adaptor, R, inverted := adaptorSign(privKey, msg, T, &mn.u)
+	full, err := assembleFullSig(adaptor, &mn.t, R, inverted)
+
+	return full, adaptor, err
 }
 
 // TestAdaptorSigStatic tests whether the adaptor signature scheme works for
@@ -55,7 +68,7 @@ func TestAdaptorSigStatic(t *testing.T) {
 		// negative.
 		noncer.t[31] = noncer.t[31] + byte(i)
 
-		sig, adaptor, err := Sign(privKey, msgData, noncer)
+		sig, adaptor, err := sign(privKey, msgData, noncer)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -117,7 +130,7 @@ func BenchmarkSigning(b *testing.B) {
 	b.ResetTimer()
 	for i := uint32(0); i < n; i++ {
 		binary.BigEndian.PutUint32(msgData, i)
-		_, _, err := Sign(privKey, msgData, noncer)
+		_, _, err := sign(privKey, msgData, noncer)
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)
 		}
@@ -187,7 +200,7 @@ func TestAdaptorSigTxs(t *testing.T) {
 	}
 
 	// Sign via the adaptor sig method.
-	sig, _, err := Sign(privKey, sigHash, newMockNoncer())
+	sig, _, err := sign(privKey, sigHash, newMockNoncer())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
