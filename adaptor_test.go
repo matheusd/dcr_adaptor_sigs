@@ -68,7 +68,7 @@ func TestAdaptorSigStatic(t *testing.T) {
 	}
 
 	// But it should *not* be a valid schnorr sig.
-	adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, adaptor.r.X, adaptor.sPrime)
+	adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, adaptor.R().X, adaptor.sPrime)
 	if adaptorIsFullyValid {
 		t.Fatal("adaptor sig still verified as valid when it should not")
 	}

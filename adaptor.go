@@ -30,9 +30,13 @@ func (sig *Signature) SchnorrSig() *schnorr.Signature {
 type AdaptorSignature struct {
 	t      *secp256k1.PublicKey // T = secret * G
 	u      *secp256k1.PublicKey // U = uG
-	r      *secp256k1.PublicKey // R = T + U
 	sPrime *big.Int             // s' = u + Hash(T+U || m) * privKey
 	flags  byte
+}
+
+func (asig *AdaptorSignature) R() *secp256k1.PublicKey {
+	r, _ := produceR(asig.t, asig.u)
+	return r
 }
 
 // Noncer defines a single function Nonces that is used to generate nonces for
@@ -81,7 +85,8 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 	// verification. In that case, send out a flag that indicates the
 	// secret is "negative" and we need to perform a slightly different
 	// operation to extract it from the full and adaptor signatures.
-	if rPub.Y.Bit(0) == 1 {
+	rPub, inverted := produceR(tPub, uPub)
+	if inverted {
 		rNonce.Sub(curve.N, rNonce)
 		rPub = pubkeyFromPrivData(rNonce.Bytes())
 		flags = flags | negativeSecretFlag
@@ -118,7 +123,6 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 	adaptor := &AdaptorSignature{
 		t:      tPub,
 		u:      uPub,
-		r:      rPub,
 		sPrime: sPrime,
 		flags:  flags,
 	}
@@ -155,8 +159,9 @@ func AssembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar) (*Signatur
 		s.Add(adaptor.sPrime, secretBig)
 	}
 	s.Mod(s, secp256k1.S256().N)
+	R, _ := produceR(adaptor.u, adaptor.t)
 	return &Signature{
-		r: adaptor.r,
+		r: R,
 		s: s,
 	}, nil
 }
@@ -177,8 +182,7 @@ func VerifyAdaptorSig(adaptor *AdaptorSignature, pubKey *secp256k1.PublicKey, ms
 	// Recall that R = T + U
 
 	// Calculate Hash(T+U || m).
-	bigZero := new(big.Int)
-	rPub := secp256k1.NewPublicKey(adaptor.r.X, bigZero)
+	rPub, _ := produceR(adaptor.t, adaptor.u)
 	rmHash := calcHash(rPub, msg)
 
 	// Multiply by the pubkey to get E = Hash(T+U ||m) * P.

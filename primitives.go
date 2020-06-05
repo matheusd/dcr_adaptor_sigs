@@ -73,6 +73,7 @@ func encodedBytesToBigInt(s []byte) *big.Int {
 	bi := new(big.Int).SetBytes(c[:])
 	return bi
 }
+
 func calcHash(pub *secp256k1.PublicKey, msg []byte) *big.Int {
 	pubBytes := bigIntToEncodedBytes(pub.X)
 	var input [64]byte
@@ -81,4 +82,19 @@ func calcHash(pub *secp256k1.PublicKey, msg []byte) *big.Int {
 	output := chainhash.HashB(input[:])
 	outputBig := new(big.Int).SetBytes(output)
 	return outputBig
+}
+
+// produceR generates the R = T+U full nonce. It returns true on the second
+// return value if the point needed to be inverted to maintain consistency with
+// current consensus rules.
+func produceR(uPub, tPub *secp256k1.PublicKey) (*secp256k1.PublicKey, bool) {
+	inverted := false
+	rPub := addPubKeys(uPub, tPub)
+	if rPub.Y.Bit(0) == 1 {
+		inverted = true
+		rPub.X.Sub(rPub.X, secp256k1.S256().N)
+	}
+	rPub.X.Mod(rPub.X, secp256k1.S256().N)
+
+	return rPub, inverted
 }
