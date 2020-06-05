@@ -112,6 +112,11 @@ func adaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicK
 func AdaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicKey, noncer Noncer) (*AdaptorSignature, error) {
 	u := noncer.nonce(privKey, msg)
 	sig, _, _ := adaptorSign(privKey, msg, T, &u)
+
+	// Clear out the private nonce from memory.
+	for i := range u[:] {
+		u[i] = 0
+	}
 	return sig, nil
 }
 
