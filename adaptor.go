@@ -7,13 +7,6 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v2/schnorr"
 )
 
-const (
-	// negativeSecretFlag is the bit that indicates the secret is encoded
-	// as a negative number in adaptor signatures and should be
-	// appropriately handled.
-	negativeSecretFlag = 0x01
-)
-
 type SecretScalar [32]byte
 
 // Signature is the fully valid Schnorr signature.
@@ -31,7 +24,6 @@ type AdaptorSignature struct {
 	t      *secp256k1.PublicKey // T = secret * G
 	u      *secp256k1.PublicKey // U = uG
 	sPrime *big.Int             // s' = u + Hash(T+U || m) * privKey
-	flags  byte
 }
 
 func (asig *AdaptorSignature) R() *secp256k1.PublicKey {
@@ -59,7 +51,6 @@ type Noncer interface {
 func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature, *AdaptorSignature, error) {
 
 	curve := secp256k1.S256()
-	var flags byte
 
 	// Generate the nonces.
 	tNonceData, uNonceData, err := noncer.Nonces()
@@ -89,7 +80,6 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 	if inverted {
 		rNonce.Sub(curve.N, rNonce)
 		rPub = pubkeyFromPrivData(rNonce.Bytes())
-		flags = flags | negativeSecretFlag
 	}
 
 	// Calculate Hash(T+U || m) * x
@@ -99,7 +89,7 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 
 	// Calculate the Adaptor Signature s' = u - Hash(T+U || m) * x
 	sPrime := new(big.Int)
-	if flags&negativeSecretFlag > 0 {
+	if inverted {
 		sPrime.Sub(curve.N, uNonce)
 		sPrime.Sub(sPrime, rmhx)
 	} else {
@@ -124,7 +114,6 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 		t:      tPub,
 		u:      uPub,
 		sPrime: sPrime,
-		flags:  flags,
 	}
 
 	// Done! Return all data.
@@ -135,7 +124,8 @@ func Sign(privKey *secp256k1.PrivateKey, msg []byte, noncer Noncer) (*Signature,
 // after one has seen both the full and adaptor signatures.
 func RecoverSecret(sig *Signature, adaptor *AdaptorSignature) SecretScalar {
 	secret := new(big.Int)
-	if adaptor.flags&negativeSecretFlag > 0 {
+	_, inverted := produceR(adaptor.u, adaptor.t)
+	if inverted {
 		secret.Sub(adaptor.sPrime, sig.s)
 	} else {
 		secret.Sub(sig.s, adaptor.sPrime)
@@ -153,13 +143,15 @@ func AssembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar) (*Signatur
 	secretBig.SetBytes(secret[:])
 
 	s := new(big.Int)
-	if adaptor.flags&negativeSecretFlag > 0 {
+	R, inverted := produceR(adaptor.u, adaptor.t)
+	if inverted {
 		s.Sub(adaptor.sPrime, secretBig)
 	} else {
+		// s.Sub(adaptor.sPrime, secretBig)
+
 		s.Add(adaptor.sPrime, secretBig)
 	}
 	s.Mod(s, secp256k1.S256().N)
-	R, _ := produceR(adaptor.u, adaptor.t)
 	return &Signature{
 		r: R,
 		s: s,

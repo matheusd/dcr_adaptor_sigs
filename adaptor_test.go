@@ -49,51 +49,59 @@ func TestAdaptorSigStatic(t *testing.T) {
 	noncer := newMockNoncer()
 	msgData, _ := hex.DecodeString("0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F")
 
-	sig, adaptor, err := Sign(privKey, msgData, noncer)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	for i := 0; i < 2; i++ {
+		// Due to consensus rules around schnorr requiring positive R
+		// values, ensure we test cases where R ends up positive and
+		// negative.
+		noncer.t[31] = noncer.t[31] + byte(i)
 
-	// The full signature should be a valid schnorr sig.
-	shSig := sig.SchnorrSig()
-	valid := schnorr.Verify(pubKey, msgData, shSig.R, shSig.S)
-	if !valid {
-		t.Fatalf("signature failed verification")
-	}
+		sig, adaptor, err := Sign(privKey, msgData, noncer)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-	// The adaptor sig should be a valid partial sig.
-	validAdaptor := VerifyAdaptorSig(adaptor, pubKey, msgData)
-	if !validAdaptor {
-		t.Fatal("adaptor signature failed verification")
-	}
+		// The full signature should be a valid schnorr sig.
+		shSig := sig.SchnorrSig()
+		valid := schnorr.Verify(pubKey, msgData, shSig.R, shSig.S)
+		if !valid {
+			t.Fatalf("signature failed verification")
+		}
 
-	// But it should *not* be a valid schnorr sig.
-	adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, adaptor.R().X, adaptor.sPrime)
-	if adaptorIsFullyValid {
-		t.Fatal("adaptor sig still verified as valid when it should not")
-	}
+		// The adaptor sig should be a valid partial sig.
+		validAdaptor := VerifyAdaptorSig(adaptor, pubKey, msgData)
+		if !validAdaptor {
+			t.Fatal("adaptor signature failed verification")
+		}
 
-	// We should be able to extract the secret from the difference between
-	// the full sig and the adaptor sig.
-	gotSecret := RecoverSecret(sig, adaptor)
+		// But it should *not* be a valid schnorr sig.
+		adaptorIsFullyValid := schnorr.Verify(pubKey, msgData, adaptor.R().X, adaptor.sPrime)
+		if adaptorIsFullyValid {
+			t.Fatal("adaptor sig still verified as valid when it should not")
+		}
 
-	// And the secret should equal the original `t` nonce data.
-	if !bytes.Equal(gotSecret[:], noncer.t[:]) {
-		t.Fatalf("extracted secret not equal to original t nonce. want=%x got=%x",
-			noncer.t, gotSecret)
-	}
+		// We should be able to extract the secret from the difference between
+		// the full sig and the adaptor sig.
+		gotSecret := RecoverSecret(sig, adaptor)
 
-	// Conversely, having been given the adaptor sig, public nonce (T+U)
-	// and the secret we should be able to combine them into a valid
-	// signature.
-	assembledSig, err := AssembleFullSig(adaptor, &noncer.t)
-	if err != nil {
-		t.Fatalf("full sig assembly failed: %v", err)
-	}
-	shSig = assembledSig.SchnorrSig()
-	validAssembled := schnorr.Verify(pubKey, msgData, shSig.R, shSig.S)
-	if !validAssembled {
-		t.Fatalf("assembled signature failed verification")
+		// And the secret should equal the original `t` nonce data.
+		if !bytes.Equal(gotSecret[:], noncer.t[:]) {
+			t.Fatalf("extracted secret not equal to original t nonce. want=%x got=%x",
+				noncer.t, gotSecret)
+		}
+
+		// Conversely, having been given the adaptor sig, public nonce (T+U)
+		// and the secret we should be able to combine them into a valid
+		// signature.
+		assembledSig, err := AssembleFullSig(adaptor, &noncer.t)
+		if err != nil {
+			t.Fatalf("full sig assembly failed: %v", err)
+		}
+		shSig = assembledSig.SchnorrSig()
+		validAssembled := schnorr.Verify(pubKey, msgData, shSig.R, shSig.S)
+		if !validAssembled {
+			t.Fatalf("assembled signature failed verification")
+		}
+
 	}
 }
 
