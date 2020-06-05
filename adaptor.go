@@ -28,9 +28,61 @@ type AdaptorSignature struct {
 	sPrime *big.Int             // s' = u + Hash(T+U || m) * privKey
 }
 
+func ParseAdaptorSignature(b []byte) (*AdaptorSignature, error) {
+	sigLen := 32 + 32 + 32 + 1
+	if len(b) != sigLen {
+		return nil, fmt.Errorf("slice does not have required length")
+	}
+
+	var t, u *secp256k1.PublicKey
+	var err error
+	flags := b[0]
+	tFlags := 0x2 | (flags & 0x1)
+	uFlags := 0x2 | ((flags & 0x2) >> 1)
+
+	parsePk := func(f byte, b []byte) (*secp256k1.PublicKey, error) {
+		pkb := make([]byte, 33)
+		pkb[0] = f
+		copy(pkb[1:], b)
+		return secp256k1.ParsePubKey(pkb)
+	}
+
+	if t, err = parsePk(tFlags, b[1:33]); err != nil {
+		return nil, err
+	}
+	if u, err = parsePk(uFlags, b[33:65]); err != nil {
+		return nil, err
+	}
+	s := encodedBytesToBigInt(b[65:97])
+	return &AdaptorSignature{
+		t:      t,
+		u:      u,
+		sPrime: s,
+	}, nil
+}
+
 func (asig *AdaptorSignature) R() *secp256k1.PublicKey {
 	r, _ := produceR(asig.t, asig.u)
 	return r
+}
+
+func (asig *AdaptorSignature) Serialize() []byte {
+	tBytes := bigIntToEncodedBytes(asig.t.X)
+	uBytes := bigIntToEncodedBytes(asig.u.X)
+	sBytes := bigIntToEncodedBytes(asig.sPrime)
+
+	// The first byte has two flags (LSB): whether the Y coordinate for T
+	// is odd and whether the Y coordinate for U is odd.
+	var flags byte
+	flags = flags | byte(asig.t.Y.Bit(0)&1)<<0
+	flags = flags | byte(asig.u.Y.Bit(0)&1)<<1
+
+	all := make([]byte, 0, len(tBytes)+len(uBytes)+len(sBytes)+1)
+	all = append(all, flags)
+	all = append(all, tBytes[:]...)
+	all = append(all, uBytes[:]...)
+	all = append(all, sBytes[:]...)
+	return all
 }
 
 // Noncer defines a single function Nonces that is used to generate nonces for

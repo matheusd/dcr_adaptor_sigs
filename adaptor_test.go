@@ -73,6 +73,14 @@ func TestAdaptorSigStatic(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
+		// Do a roundtrip of serializing/deserializing the adaptor sig
+		// to ensure serialization is working.
+		adaptorSer := adaptor.Serialize()
+		adaptor, err = ParseAdaptorSignature(adaptorSer)
+		if err != nil {
+			t.Fatalf("serialization roundtrip failed: %v", err)
+		}
+
 		// The full signature should be a valid schnorr sig.
 		shSig := sig.SchnorrSig()
 		valid := schnorr.Verify(pubKey, msgData, shSig.R, shSig.S)
