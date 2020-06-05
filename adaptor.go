@@ -65,6 +65,8 @@ func (r RFC6979Noncer) nonce(priv *secp256k1.PrivateKey, msg []byte) [32]byte {
 	return u
 }
 
+var DefaultNoncer RFC6979Noncer
+
 // adaptorSign produces an adaptor signature without knowledge of the private
 // scalar `t`. It returns the newly created adaptor signature plus the public
 // R=(T+U) and a bool indicating whether R was inverted to maintain consensus
