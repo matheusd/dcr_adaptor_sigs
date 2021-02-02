@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v2"
-	"github.com/decred/dcrd/dcrec/secp256k1/v2/schnorr"
+	"github.com/decred/dcrd/dcrec/secp256k1/v3"
+	"github.com/decred/dcrd/dcrec/secp256k1/v3/schnorr"
 )
 
 type SecretScalar [32]byte
@@ -15,21 +15,11 @@ func (s *SecretScalar) PublicPoint() *secp256k1.PublicKey {
 	return pubkeyFromPrivData(s[:])
 }
 
-// Signature is the fully valid Schnorr signature.
-type Signature struct {
-	r *secp256k1.PublicKey // R = tG + uG
-	s *big.Int             // s = t + u - Hash(T+U || m) * privKey
-}
-
-func (sig *Signature) SchnorrSig() *schnorr.Signature {
-	return schnorr.NewSignature(sig.r.X, sig.s)
-}
-
 // AdaptorSignature is the partial adaptor signature.
 type AdaptorSignature struct {
 	t      *secp256k1.PublicKey // T = secret * G
 	u      *secp256k1.PublicKey // U = uG
-	sPrime *big.Int             // s' = u + Hash(T+U || m) * privKey
+	sPrime secp256k1.ModNScalar
 }
 
 // AdaptorSignatureSerializeLen is the length of a serialized adaptor
@@ -60,7 +50,10 @@ func ParseAdaptorSignature(b []byte) (*AdaptorSignature, error) {
 	if u, err = parsePk(uFlags, b[33:65]); err != nil {
 		return nil, err
 	}
-	s := encodedBytesToBigInt(b[65:97])
+	var s secp256k1.ModNScalar
+	if s.SetByteSlice(b[65:97]) {
+		return nil, fmt.Errorf("serialized sprime overflowed ModNScalar")
+	}
 	return &AdaptorSignature{
 		t:      t,
 		u:      u,
@@ -85,20 +78,21 @@ func (asig *AdaptorSignature) T() *secp256k1.PublicKey {
 }
 
 func (asig *AdaptorSignature) Serialize() []byte {
-	tBytes := bigIntToEncodedBytes(asig.t.X)
-	uBytes := bigIntToEncodedBytes(asig.u.X)
-	sBytes := bigIntToEncodedBytes(asig.sPrime)
+	tBytes := asig.t.SerializeCompressed()
+	uBytes := asig.u.SerializeCompressed()
+	sBytes := asig.sPrime.Bytes()
 
 	// The first byte has two flags (LSB): whether the Y coordinate for T
 	// is odd and whether the Y coordinate for U is odd.
 	var flags byte
-	flags = flags | byte(asig.t.Y.Bit(0)&1)<<0
-	flags = flags | byte(asig.u.Y.Bit(0)&1)<<1
+	const isOddMask = 0x01
+	flags = flags | tBytes[0]&isOddMask<<0
+	flags = flags | uBytes[0]&isOddMask<<1
 
 	all := make([]byte, 0, len(tBytes)+len(uBytes)+len(sBytes)+1)
 	all = append(all, flags)
-	all = append(all, tBytes[:]...)
-	all = append(all, uBytes[:]...)
+	all = append(all, tBytes[1:]...)
+	all = append(all, uBytes[1:]...)
 	all = append(all, sBytes[:]...)
 	return all
 }
@@ -135,9 +129,10 @@ func (r RandomNoncer) nonce(_ *secp256k1.PrivateKey, _ []byte) [32]byte {
 type RFC6979Noncer struct{}
 
 func (r RFC6979Noncer) nonce(priv *secp256k1.PrivateKey, msg []byte) [32]byte {
-	b := secp256k1.NonceRFC6979(priv.D, msg, nil, nil)
+	privBytes := priv.Serialize()
+	b := secp256k1.NonceRFC6979(privBytes, msg, nil, nil, 0)
 	var u [32]byte
-	copy(u[:], b.Bytes())
+	b.PutBytes(&u)
 	return u
 }
 
@@ -177,7 +172,7 @@ func adaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicK
 	// Calculate Hash(T+U || m) * x
 	rmHash := calcHash(R, msg)
 	rmhx := new(big.Int)
-	rmhx.Mul(rmHash, privKey.D)
+	rmhx.Mul(rmHash, encodedBytesToBigInt(privKey.Serialize()))
 
 	// Calculate the Adaptor Signature s' = u - Hash(T+U || m) * x
 	sPrime := new(big.Int)
@@ -188,13 +183,15 @@ func adaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicK
 		sPrime.Sub(uNonce, rmhx)
 	}
 	sPrime.Mod(sPrime, curve.N)
+	var sPrimeModN secp256k1.ModNScalar
+	sPrimeModN.SetByteSlice(sPrime.Bytes())
 
 	// TODO: bounds check adaptorSig (if == 0)
 
 	adaptor := &AdaptorSignature{
 		t:      T,
 		u:      U,
-		sPrime: sPrime,
+		sPrime: sPrimeModN,
 	}
 	return adaptor, R, inverted
 }
@@ -214,45 +211,62 @@ func AdaptorSign(privKey *secp256k1.PrivateKey, msg []byte, T *secp256k1.PublicK
 // assembleFullSig assembles the full signature given some adaptor sig and the
 // secret scalar.
 func assembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar,
-	R *secp256k1.PublicKey, inverted bool) (*Signature, error) {
+	R *secp256k1.PublicKey, inverted bool) (*schnorr.Signature, error) {
 
 	secretBig := new(big.Int)
 	secretBig.SetBytes(secret[:])
 
+	sPrime := new(big.Int)
+	sPrimeBytes := adaptor.sPrime.Bytes()
+	sPrime.SetBytes(sPrimeBytes[:])
+
 	s := new(big.Int)
 	if inverted {
-		s.Sub(adaptor.sPrime, secretBig)
+		s.Sub(sPrime, secretBig)
 	} else {
-		s.Add(adaptor.sPrime, secretBig)
+		s.Add(sPrime, secretBig)
 	}
 	s.Mod(s, secp256k1.S256().N)
-	return &Signature{
-		r: R,
-		s: s,
-	}, nil
+
+	var rJacobian secp256k1.JacobianPoint
+	R.AsJacobian(&rJacobian)
+
+	var sModN secp256k1.ModNScalar
+	if sModN.SetByteSlice(s.Bytes()) {
+		return nil, fmt.Errorf("s overflowed ModNScalar")
+	}
+
+	return schnorr.NewSignature(&rJacobian.X, &sModN), nil
 }
 
 // AssembleFullSig allows one to (re-)assemble the fully valid signature after
 // one has seen both the adaptor signature and the secret.
-func AssembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar) (*Signature, error) {
+func AssembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar) (*schnorr.Signature, error) {
 	R, inverted := produceR(adaptor.u, adaptor.t)
 	return assembleFullSig(adaptor, secret, R, inverted)
 }
 
 // RecoverSecret allows one to recover the secret nonce (the "t" secret nonce)
 // after one has seen both the full and adaptor signatures.
-func RecoverSecret(sig *Signature, adaptor *AdaptorSignature) SecretScalar {
+func RecoverSecret(sig *schnorr.Signature, adaptor *AdaptorSignature) SecretScalar {
 	secret := new(big.Int)
+	sPrime := new(big.Int)
+	sPrimeBytes := adaptor.sPrime.Bytes()
+	sPrime.SetBytes(sPrimeBytes[:])
+	sigBytes := sig.Serialize()
+	s := new(big.Int)
+	s.SetBytes(sigBytes[32:64])
+
 	_, inverted := produceR(adaptor.u, adaptor.t)
 	if inverted {
-		secret.Sub(adaptor.sPrime, sig.s)
+		secret.Sub(sPrime, s)
 	} else {
-		secret.Sub(sig.s, adaptor.sPrime)
+		secret.Sub(s, sPrime)
 	}
 	secret.Mod(secret, secp256k1.S256().N)
-	var s SecretScalar
-	copy(s[:], secret.Bytes())
-	return s
+	var t SecretScalar
+	copy(t[:], secret.Bytes())
+	return t
 }
 
 // VerifyAdaptorSig allows one to verify whether a given adaptor sig is valid,
@@ -286,5 +300,5 @@ func VerifyAdaptorSig(adaptor *AdaptorSignature, pubKey *secp256k1.PublicKey, ms
 	targetPoint := addPubKeys(sg, hpub)
 
 	// That must equal the partial nonce U = uG
-	return adaptor.u.X.Cmp(targetPoint.X) == 0
+	return adaptor.u.X().Cmp(targetPoint.X()) == 0
 }

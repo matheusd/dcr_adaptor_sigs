@@ -4,31 +4,30 @@ import (
 	"math/big"
 
 	"github.com/decred/dcrd/chaincfg/chainhash"
-	"github.com/decred/dcrd/dcrec/secp256k1/v2"
+	"github.com/decred/dcrd/dcrec/secp256k1/v3"
 )
 
 const scalarSize = 32
 
+func b2f(b *big.Int) *secp256k1.FieldVal {
+	var res secp256k1.FieldVal
+	res.SetByteSlice(b.Bytes())
+	return &res
+}
+
 func pubkeyFromPrivData(privData []byte) *secp256k1.PublicKey {
 	pubX, pubY := secp256k1.S256().ScalarBaseMult(privData)
-	return secp256k1.NewPublicKey(pubX, pubY)
+	return secp256k1.NewPublicKey(b2f(pubX), b2f(pubY))
 }
 
 func addPubKeys(p1, p2 *secp256k1.PublicKey) *secp256k1.PublicKey {
-	r1, r2 := secp256k1.S256().Add(p1.X, p1.Y, p2.X, p2.Y)
-	return secp256k1.NewPublicKey(r1, r2)
+	r1, r2 := secp256k1.S256().Add(p1.X(), p1.Y(), p2.X(), p2.Y())
+	return secp256k1.NewPublicKey(b2f(r1), b2f(r2))
 }
 
 func pubKeyMult(p *secp256k1.PublicKey, k []byte) *secp256k1.PublicKey {
-	x, y := secp256k1.S256().ScalarMult(p.X, p.Y, k)
-	return secp256k1.NewPublicKey(x, y)
-}
-
-func negatePubKey(p *secp256k1.PublicKey) *secp256k1.PublicKey {
-	newy := new(big.Int)
-	newy.Add(p.X, p.Y)
-	newy.Mod(newy, secp256k1.S256().N)
-	return secp256k1.NewPublicKey(p.X, newy)
+	x, y := secp256k1.S256().ScalarMult(p.X(), p.Y(), k)
+	return secp256k1.NewPublicKey(b2f(x), b2f(y))
 }
 
 // bigIntToEncodedBytes converts a big integer into its corresponding 32 byte
@@ -75,7 +74,7 @@ func encodedBytesToBigInt(s []byte) *big.Int {
 }
 
 func calcHash(pub *secp256k1.PublicKey, msg []byte) *big.Int {
-	pubBytes := bigIntToEncodedBytes(pub.X)
+	pubBytes := bigIntToEncodedBytes(pub.X())
 	var input [64]byte
 	copy(input[:32], pubBytes[:])
 	copy(input[32:], msg[:])
@@ -90,11 +89,12 @@ func calcHash(pub *secp256k1.PublicKey, msg []byte) *big.Int {
 func produceR(uPub, tPub *secp256k1.PublicKey) (*secp256k1.PublicKey, bool) {
 	inverted := false
 	rPub := addPubKeys(uPub, tPub)
-	if rPub.Y.Bit(0) == 1 {
+	if rPub.Y().Bit(0) == 1 {
 		inverted = true
-		rPub.X.Sub(rPub.X, secp256k1.S256().N)
+		newX := new(big.Int).Sub(rPub.X(), secp256k1.S256().N)
+		newX.Mod(newX, secp256k1.S256().N)
+		rPub = secp256k1.NewPublicKey(b2f(newX), b2f(rPub.Y()))
 	}
-	rPub.X.Mod(rPub.X, secp256k1.S256().N)
 
 	return rPub, inverted
 }
