@@ -11,6 +11,10 @@ import (
 
 type SecretScalar [32]byte
 
+func (s *SecretScalar) PublicPoint() *secp256k1.PublicKey {
+	return pubkeyFromPrivData(s[:])
+}
+
 // Signature is the fully valid Schnorr signature.
 type Signature struct {
 	r *secp256k1.PublicKey // R = tG + uG
@@ -28,9 +32,12 @@ type AdaptorSignature struct {
 	sPrime *big.Int             // s' = u + Hash(T+U || m) * privKey
 }
 
+// AdaptorSignatureSerializeLen is the length of a serialized adaptor
+// signature.
+const AdaptorSignatureSerializeLen = 32 + 32 + 32 + 1
+
 func ParseAdaptorSignature(b []byte) (*AdaptorSignature, error) {
-	sigLen := 32 + 32 + 32 + 1
-	if len(b) != sigLen {
+	if len(b) != AdaptorSignatureSerializeLen {
 		return nil, fmt.Errorf("slice does not have required length")
 	}
 
@@ -61,9 +68,20 @@ func ParseAdaptorSignature(b []byte) (*AdaptorSignature, error) {
 	}, nil
 }
 
+// R returns the full public nonce point, used to validate the full signature.
 func (asig *AdaptorSignature) R() *secp256k1.PublicKey {
 	r, _ := produceR(asig.t, asig.u)
 	return r
+}
+
+// U returns the random public nonce, used to validate an adaptor signature.
+func (asig *AdaptorSignature) U() *secp256k1.PublicKey {
+	return asig.u
+}
+
+// T returns the target public nonce, used to validate an adaptor signature.
+func (asig *AdaptorSignature) T() *secp256k1.PublicKey {
+	return asig.t
 }
 
 func (asig *AdaptorSignature) Serialize() []byte {
@@ -83,6 +101,12 @@ func (asig *AdaptorSignature) Serialize() []byte {
 	all = append(all, uBytes[:]...)
 	all = append(all, sBytes[:]...)
 	return all
+}
+
+// Verify returns whether the given adaptor sig is a valid **adaptor** sig.
+// Note that valid adaptor signatures are *NOT* valid Schnorr signatures.
+func (asig *AdaptorSignature) Verify(msg []byte, pubKey *secp256k1.PublicKey) bool {
+	return VerifyAdaptorSig(asig, pubKey, msg)
 }
 
 // Noncer defines a single function Nonces that is used to generate nonces for
@@ -115,6 +139,21 @@ func (r RFC6979Noncer) nonce(priv *secp256k1.PrivateKey, msg []byte) [32]byte {
 	var u [32]byte
 	copy(u[:], b.Bytes())
 	return u
+}
+
+// ExternalNoncer allows generation of a specific nonce when generating an
+// adaptor signature.
+//
+// NOTE: proper nonce selection is CRITICALLY important for safe application of
+// adaptor signatures, so implementors MUST understand how to do it, otherwise
+// an adaptor signature might disclose the private key.
+//
+// Callers are encouraged *NOT* to use this noncer, but instead rely on
+// RFC6979Noncer or RandomNoncer as those are generally safer to use.
+type ExternalNoncer func() [32]byte
+
+func (en ExternalNoncer) nonce(priv *secp256k1.PrivateKey, msg []byte) [32]byte {
+	return en()
 }
 
 var DefaultNoncer RFC6979Noncer

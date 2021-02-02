@@ -3,6 +3,7 @@ module github.com/matheusd/dcr_adaptor_sigs
 go 1.13
 
 require (
+	github.com/davecgh/go-spew v1.1.1
 	github.com/decred/dcrd/chaincfg/chainhash v1.0.2
 	github.com/decred/dcrd/chaincfg/v2 v2.3.0
 	github.com/decred/dcrd/dcrec v1.0.0

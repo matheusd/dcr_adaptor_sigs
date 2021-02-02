@@ -98,3 +98,11 @@ func produceR(uPub, tPub *secp256k1.PublicKey) (*secp256k1.PublicKey, bool) {
 
 	return rPub, inverted
 }
+
+// FullSigR produces the R point for the fully valid Schnorr sig starting from
+// the public nonce (uPub) and the point corresponding to the target secret
+// scalar (tPub).
+func FullSigR(uPub, tPub *secp256k1.PublicKey) *secp256k1.PublicKey {
+	r, _ := produceR(uPub, tPub)
+	return r
+}
