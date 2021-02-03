@@ -105,6 +105,8 @@ func (asig *AdaptorSignature) Verify(msg []byte, pubKey *secp256k1.PublicKey) bo
 
 // Noncer defines a single function Nonces that is used to generate nonces for
 // adaptor signatures.
+//
+// TODO: deal with failed signatures (recreate nonce).
 type Noncer interface {
 	nonce(privKey *secp256k1.PrivateKey, msg []byte) [32]byte
 }
