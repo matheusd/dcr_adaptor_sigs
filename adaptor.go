@@ -217,6 +217,7 @@ func assembleFullSig(adaptor *AdaptorSignature, secret *SecretScalar,
 
 	secretBig := new(big.Int)
 	secretBig.SetBytes(secret[:])
+	secretBig.Mod(secretBig, secp256k1.S256().N)
 
 	sPrime := new(big.Int)
 	sPrimeBytes := adaptor.sPrime.Bytes()
