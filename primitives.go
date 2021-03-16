@@ -93,7 +93,13 @@ func produceR(uPub, tPub *secp256k1.PublicKey) (*secp256k1.PublicKey, bool) {
 		inverted = true
 		newX := new(big.Int).Sub(rPub.X(), secp256k1.S256().N)
 		newX.Mod(newX, secp256k1.S256().N)
-		rPub = secp256k1.NewPublicKey(b2f(newX), b2f(rPub.Y()))
+		var newY secp256k1.FieldVal
+		if !secp256k1.DecompressY(b2f(newX), false, &newY) {
+			// This shouldn't happen as long as the input pubkeys
+			// are valid.
+			panic("bogus R after inversion!")
+		}
+		rPub = secp256k1.NewPublicKey(b2f(newX), &newY)
 	}
 
 	return rPub, inverted
